@@ -33,4 +33,4 @@ jobs:
         with:
           ACCESS_TOKEN: ${{ secrets.ACCESS_TOKEN }}
           BRANCH: pages
-          FOLDER: docs/.virepress/dist 
+          FOLDER: .virepress/dist 
