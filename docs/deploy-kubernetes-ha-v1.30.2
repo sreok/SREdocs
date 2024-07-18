@@ -1,0 +1,512 @@
+# 【生产实践】Rocky Linux 9.4 部署高可用Kubernetes v1.30.2
+
+### **配置网络**
+
+> Rocky 9.4使用NetworkManager管理网络
+
+```
+vim /etc/NetworkManager/system-connections/ens5f0.nmconnection
+[connection]
+id=ens5f0
+uuid=48245c90-e7e7-3e84-8f6d-a1f8cf5cd9e1
+type=ethernet
+autoconnect-priority=-999
+interface-name=ens5f0
+
+[ethernet]
+cloned-mac-address=random
+
+[ipv4]
+address1=172.25.2.4/24,172.25.2.1
+dns=218.2.2.2;
+method=manual
+
+[ipv6]
+addr-gen-mode=eui64
+method=auto
+
+[proxy]
+```
+
+
+
+```
+# 设置时区（所有节点）
+timedatectl set-timezone Asia/Shanghai
+# 24小时制
+localectl set-locale LC_TIME=en_GB.UTF-8
+
+yum install chrony -y
+cat > /etc/chrony.conf << EOF 
+# 从公网同步
+pool ntp.aliyun.com iburst
+# 指定使用ntp.aliyun.com作为时间服务器池，iburst选项表示在初始同步时会发送多个请求以加快同步速度
+driftfile /var/lib/chrony/drift
+# 当系统时间与服务器时间偏差大于1秒时，会以1秒的步长进行调整。如果偏差超过3秒，则立即进行时间调整
+makestep 1.0 3
+# 启用硬件时钟同步功能，可以提高时钟的准确性
+rtcsync
+# 允许10.20.13.0/24网段范围内的主机与chrony进行时间同步
+allow 0.0.0.0/24
+# 将本地时钟设为stratum 10，stratum值表示时钟的准确度，值越小表示准确度越高
+local stratum 10
+# 指定使用的密钥文件路径，用于对时间同步进行身份验证
+keyfile /etc/chrony.keys
+# 指定时区为UTC
+leapsectz right/UTC
+# 指定日志文件存放目录
+logdir /var/log/chrony
+EOF
+systemctl restart chronyd ; systemctl enable chronyd
+
+# 客户端
+yum install chrony -y
+cat > /etc/chrony.conf << EOF 
+# 从服务端同步
+pool 172.25.2.4 iburst
+# 指定使用ntp.aliyun.com作为时间服务器池，iburst选项表示在初始同步时会发送多个请求以加快同步速度
+driftfile /var/lib/chrony/drift
+# 当系统时间与服务器时间偏差大于1秒时，会以1秒的步长进行调整。如果偏差超过3秒，则立即进行时间调整
+makestep 1.0 3
+# 启用硬件时钟同步功能，可以提高时钟的准确性
+rtcsync
+# 指定使用的密钥文件路径，用于对时间同步进行身份验证
+keyfile /etc/chrony.keys
+# 指定时区为UTC
+leapsectz right/UTC
+# 指定日志文件存放目录
+logdir /var/log/chrony
+EOF
+systemctl restart chronyd ; systemctl enable chronyd
+
+#使用客户端进行验证
+chronyc sources -v
+```
+
+
+
+#### **关闭防火墙**
+
+```
+# 关闭防火墙
+iptables -F && iptables -t nat -F && iptables -t mangle -F && iptables -X && iptables -P FORWARD ACCEPT
+systemctl disable firewalld --now
+```
+
+#### **禁用SELinux**
+
+```
+# 禁用selinux
+setenforce 0
+sed -i 's/^SELINUX=enforcing$/SELINUX=disabled/g' /etc/selinux/config
+```
+
+#### **关闭swap**
+
+```
+# 临时关闭swap
+swapoff -a
+# 永久关闭swap
+sed -i 's/.*swap.*/#&/g' /etc/fstab
+```
+
+#### **安装系统工具**
+
+```
+yum update -y && yum -y install wget psmisc jq vim net-tools nfs-utils telnet yum-utils device-mapper-persistent-data lvm2 git tar curl
+```
+
+#### **加载IPVS模块**
+
+```
+yum install ipvsadm ipset sysstat conntrack libseccomp -y
+cat > /etc/modules-load.d/k8s.conf <<EOF 
+# IPVS 是 Linux 内核中的一个模块，用于实现负载均衡和高可用性。它通过在前端代理服务器上分发传入请求到后端实际服务器上，提供了高性能和可扩展的网络服务
+ip_vs
+# IPVS 轮询调度算法
+ip_vs_rr
+# IPVS 加权轮询调度算法
+ip_vs_wrr
+# IPVS 哈希调度算法
+ip_vs_sh
+# overlay是containerd默认使用的存储驱动，它提供了一种轻量级的、可堆叠的、逐层增量的文件系统,它通过在现有文件系统上叠加文件系统层来创建容器的文件系统视图。每个容器可以有自己的一组文件系统层，这些层可以共享基础镜像中的文件，并在容器内部进行修改。使用overlay可以有效地使用磁盘空间，并使容器更加轻量级
+overlay
+# nf_conntrack用于跟踪和管理网络连接，包括 TCP、UDP 和 ICMP 等协议。它是实现防火墙状态跟踪的基础
+nf_conntrack
+# ip_tables提供了对 Linux 系统 IP 数据包过滤和网络地址转换（NAT）功能的支持
+ip_tables
+# 扩展了 iptables 的功能，支持更高效的 IP 地址集合操作
+ip_set
+# 扩展了 iptables 的功能，支持更高效的数据包匹配和操作
+xt_set
+# 用户空间工具，用于配置和管理 xt_set 内核模块
+ipt_set
+# 用于实现反向路径过滤，用于防止 IP 欺骗和 DDoS 攻击
+ipt_rpfilter
+# 用于拒绝 IP 数据包，并向发送方发送响应，指示数据包被拒绝
+ipt_REJECT
+# 用于实现 IP 封装在 IP（IP-over-IP）的隧道功能。它可以在不同网络之间创建虚拟隧道来传输 IP 数据包
+ipip
+EOF
+
+systemctl restart systemd-modules-load.service
+```
+
+#### **配置ulimit**
+
+```
+ulimit -SHn 65535
+cat > /etc/security/limits.conf <<EOF
+# soft表示软限制，nofile表示一个进程可打开的最大文件数，默认值为1024。这里的软限制设置为655360，即一个进程可打开的最大文件数为655360
+* soft nofile 655360
+# hard表示硬限制，即系统设置的最大值。nofile表示一个进程可打开的最大文件数，默认值为4096。这里的硬限制设置为131072，即系统设置的最大文件数为131072
+* hard nofile 131072
+# nproc表示一个用户可创建的最大进程数，默认值为30720。即一个用户可创建的最大进程数为655350
+* soft nproc 655350
+# nproc表示一个用户可创建的最大进程数，默认值为4096。即系统设置的最大进程数为655350
+* hard nproc 655350
+# memlock表示一个进程可锁定在RAM中的最大内存，默认值为64 KB。这里的软限制设置为unlimited，即一个进程可锁定的最大内存为无限制
+* seft memlock unlimited
+# memlock表示一个进程可锁定在RAM中的最大内存，默认值为64 KB。即系统设置的最大内存锁定为无限制
+* hard memlock unlimitedd
+EOF
+```
+
+#### **修改内核参数**
+
+```
+cat > /etc/sysctl.d/k8s.conf << EOF
+# 启用了IPv4的IP转发功能，允许服务器作为网络路由器转发数据包
+net.ipv4.ip_forward = 1
+# 当使用网络桥接技术时，将数据包传递到iptables进行处理
+net.bridge.bridge-nf-call-iptables = 1
+# 当该参数设置为1时，IPv6数据包将被传递到ip6tables进行处理；当该参数设置为0时，IPv6数据包将绕过ip6tables直接传递。默认情况下，这个参数的值是1
+net.bridge.bridge-nf-call-ip6tables = 1
+# 允许在挂载文件系统时，允许被其他进程使用
+fs.may_detach_mounts = 1
+# 允许原始的内存过量分配策略，当系统的内存已经被完全使用时，系统仍然会分配额外的内存
+vm.overcommit_memory=1
+# 当系统内存不足（OOM）时，禁用系统崩溃和重启
+vm.panic_on_oom=0
+# 设置系统允许一个用户的inotify实例可以监控的文件数目的上限
+fs.inotify.max_user_watches=89100
+# 设置系统同时打开的文件数的上限
+fs.file-max=52706963
+# 设置系统同时打开的文件描述符数的上限
+fs.nr_open=52706963
+# 设置系统可以创建的网络连接跟踪表项的最大数量
+net.netfilter.nf_conntrack_max=2310720
+# 设置TCP套接字的空闲超时时间（秒），超过该时间没有活动数据时，内核会发送心跳包
+net.ipv4.tcp_keepalive_time = 600
+# 设置未收到响应的TCP心跳探测次数
+net.ipv4.tcp_keepalive_probes = 3
+# 设置TCP心跳探测的时间间隔（秒）
+net.ipv4.tcp_keepalive_intvl =15
+# 设置系统可以使用的TIME_WAIT套接字的最大数量
+net.ipv4.tcp_max_tw_buckets = 36000
+# 启用TIME_WAIT套接字的重新利用，允许新的套接字使用旧的TIME_WAIT套接字
+net.ipv4.tcp_tw_reuse = 1
+# 设置系统可以同时存在的TCP套接字垃圾回收包裹数的最大数量
+net.ipv4.tcp_max_orphans = 327680
+# 设置系统对于孤立的TCP套接字的重试次数
+net.ipv4.tcp_orphan_retries = 3
+# 启用TCP SYN cookies保护，用于防止SYN洪泛攻击
+net.ipv4.tcp_syncookies = 1
+# 设置新的TCP连接的半连接数（半连接队列）的最大长度
+net.ipv4.tcp_max_syn_backlog = 16384
+# 设置系统可以创建的网络连接跟踪表项的最大数量
+net.ipv4.ip_conntrack_max = 65536
+# 关闭TCP时间戳功能，用于提供更好的安全性
+net.ipv4.tcp_timestamps = 0
+# 设置系统核心层的连接队列的最大值
+net.core.somaxconn = 16384
+
+# 启用IPv6协议
+net.ipv6.conf.all.disable_ipv6 = 0
+# 启用IPv6协议
+net.ipv6.conf.default.disable_ipv6 = 0
+# 启用IPv6协议
+net.ipv6.conf.lo.disable_ipv6 = 0
+# 允许IPv6数据包转发
+net.ipv6.conf.all.forwarding = 1
+EOF
+
+sysctl --system
+```
+
+### **安装containerd**
+
+```
+# 安装系统工具
+yum install -y yum-utils device-mapper-persistent-data lvm2
+yum-config-manager --add-repo https://mirrors.aliyun.com/docker-ce/linux/centos/docker-ce.repo
+# 修改阿里源地址
+sed -i 's+download.docker.com+mirrors.aliyun.com/docker-ce+' /etc/yum.repos.d/docker-ce.repo
+yum -y install containerd
+systemctl enable containerd --now
+containerd -v
+```
+
+#### **加载模块**
+
+```
+cat > /etc/modules-load.d/containerd.conf << EOF
+overlay
+br_netfilter
+EOF
+systemctl restart systemd-modules-load
+```
+
+#### **修改内核参数**
+
+```
+cat > /etc/sysctl.d/99-kubernetes-cri.conf << EOF
+net.bridge.bridge-nf-call-iptables  = 1
+net.ipv4.ip_forward                 = 1
+net.bridge.bridge-nf-call-ip6tables = 1
+EOF
+sysctl --system
+```
+
+#### **修改配置文件**
+
+```
+mkdir -p /etc/containerd
+# 生成默认配置文件
+containerd config default > /etc/containerd/config.toml
+# SystemdCgroup参数的作用是为了确保containerd能够正确地管理容器的资源使用，以实现资源的限制、隔离和公平分配
+sed -i "s#SystemdCgroup\ \=\ false#SystemdCgroup\ \=\ true#g" /etc/containerd/config.toml
+# 修改镜像拉取地址为国内地址，这里是pause镜像地址
+sed -i "s#registry.k8s.io#registry.aliyuncs.com/google_containers#g" /etc/containerd/config.toml
+# 指定配置文件目录
+sed -i "s#config_path\ \=\ \"\"#config_path\ \=\ \"/etc/containerd/registry\"#g" /etc/containerd/config.toml
+sed -i 's/pause:3.6/pause:3.9/g'  /etc/containerd/config.toml
+# 设置镜像加速
+mkdir /etc/containerd/registry/docker.io -pv
+cat > /etc/containerd/registry/docker.io/hosts.toml << EOF
+server = "https://docker.io"
+[host."https://docker.m.daocloud.io"]
+  capabilities = ["pull", "resolve"]
+[host."https://xk9ak4u9.mirror.aliyuncs.com"]
+  capabilities = ["pull","resolve"]
+[host."https://dockerproxy.com"]
+  capabilities = ["pull", "resolve"]
+[host."https://docker.mirrors.sjtug.sjtu.edu.cn"]
+  capabilities = ["pull","resolve"]
+[host."https://docker.mirrors.ustc.edu.cn"]
+  capabilities = ["pull","resolve"]
+[host."https://docker.nju.edu.cn"] 
+  capabilities = ["pull","resolve"]
+[host."https://registry-1.docker.io"]
+  capabilities = ["pull","resolve","push"]
+EOF
+
+mkdir /etc/containerd/registry/gcr.io -pv
+cat > /etc/containerd/registry/gcr.io/hosts.toml << EOF
+server = "https://gcr.io"
+[host."https://gcr.m.daocloud.io"]
+  capabilities = ["pull", "resolve"]
+EOF
+
+mkdir /etc/containerd/registry/registry.k8s.io -pv
+cat > /etc/containerd/registry/registry.k8s.io/hosts.toml << EOF
+server = "https://registry.k8s.io"
+[host."https://k8s.m.daocloud.io"]
+  capabilities = ["pull", "resolve"]
+EOF
+
+mkdir /etc/containerd/registry/k8s.gcr.io -pv
+cat > /etc/containerd/registry/k8s.gcr.io/hosts.toml << EOF
+server = "https://k8s.gcr.io"
+[host."https://k8s.m.daocloud.io"]
+  capabilities = ["pull", "resolve"]
+EOF
+
+mkdir /etc/containerd/registry/quay.io -pv
+cat > /etc/containerd/registry/quay.io/hosts.toml << EOF
+server = "https://quay.io"
+[host."https://quay.m.daocloud.io"]
+  capabilities = ["pull", "resolve"]
+EOF
+```
+
+#### **启动并设置开机自启**
+
+```
+systemctl daemon-reload
+systemctl enable containerd --now
+systemctl restart containerd
+systemctl status containerd
+```
+
+#### **安装crictl**
+
+下载地址：[Releases · kubernetes-sigs/cri-tools (](https://github.com/kubernetes-sigs/cri-tools/releases)[github.com](http://github.com)[)](https://github.com/kubernetes-sigs/cri-tools/releases)
+
+```
+wget https://github.com/kubernetes-sigs/cri-tools/releases/download/v1.30.0/crictl-v1.30.0-linux-amd64.tar.gz
+tar -zxf crictl-v1.30.0-linux-amd64.tar.gz 
+mv crictl /usr/local/bin/
+cat > /etc/crictl.yaml <<EOF
+runtime-endpoint: unix:///var/run/containerd/containerd.sock
+image-endpoint: unix:///var/run/containerd/containerd.sock
+timeout: 10
+debug: false
+pull-image-on-create: false
+EOF
+```
+
+#### **安装Kube-vip**
+
+```
+# 设置vip，前提先ping一下，确保IP没有被占用
+export VIP=172.25.2.50
+# 指定网卡
+export INTERFACE=ens5f0
+# 获取最新版本
+# KVVERSION=$(curl -sL https://api.github.com/repos/kube-vip/kube-vip/releases | jq -r ".[0].name")
+# 或者指定版本（这个版本目前比较稳定，不会出现报错）
+export KVVERSION=v0.6.4
+# 安装kube-vip镜像
+# ctr image pull ghcr.io/kube-vip/kube-vip:$KVVERSION; 
+alias kube-vip="ctr run --rm --net-host ghcr.io/kube-vip/kube-vip:$KVVERSION vip /kube-vip"
+# 生成清单文件
+mkdir -p /etc/kubernetes/manifests
+
+kube-vip manifest pod \
+    --interface $INTERFACE \
+    --address $VIP \
+    --controlplane \
+    --services \
+    --arp \
+    --leaderElection | tee /etc/kubernetes/manifests/kube-vip.yaml
+# 1.29版本以后需要对kube-vip修改kubernetes客户端路径
+sed -i 's#path: /etc/kubernetes/admin.conf#path: /etc/kubernetes/super-admin.conf#' \
+          /etc/kubernetes/manifests/kube-vip.yaml
+```
+
+### **安装k8s工具**
+
+版本查看：[kubernetes-new-core-stable安装包下载_开源镜像站-阿里云 (](https://mirrors.aliyun.com/kubernetes-new/core/stable/)[aliyun.com](http://aliyun.com)[)](https://mirrors.aliyun.com/kubernetes-new/core/stable/)
+
+```
+# 指定安装的k8s工具版本
+export k8sVersion=v1.30
+cat > /etc/yum.repos.d/kubernetes.repo << EOF
+[kubernetes]
+name=Kubernetes
+baseurl=https://mirrors.aliyun.com/kubernetes-new/core/stable/$k8sVersion/rpm/
+enabled=1
+gpgcheck=1
+gpgkey=https://mirrors.aliyun.com/kubernetes-new/core/stable/$k8sVersion/rpm/repodata/repomd.xml.key
+EOF
+yum install -y kubelet kubeadm kubectl
+systemctl enable kubelet --now
+```
+
+### **初始化k8s**
+
+```
+cat > kubeadm.yml << EOF
+apiVersion: kubeadm.k8s.io/v1beta3
+bootstrapTokens:
+- groups:
+  - system:bootstrappers:kubeadm:default-node-token
+  token: abcdef.0123456789abcdef
+  ttl: 24h0m0s
+  usages:
+  - signing
+  - authentication
+kind: InitConfiguration
+localAPIEndpoint:
+  advertiseAddress: 172.25.2.4 # 修改自己的ip
+  bindPort: 6443
+nodeRegistration:
+  criSocket: unix:///var/run/containerd/containerd.sock
+  imagePullPolicy: IfNotPresent
+  name: k8s-h3c-master01 # 本机的主机名
+  taints:
+  - effect: NoSchedule
+    key: node-role.kubernetes.io/k8s-master
+---
+apiServer:
+  certSANs:
+  - 127.0.0.1
+  - 172.25.2.50 # vip
+  - 172.25.2.4 # master01
+  - 172.25.2.5 # master02
+  - 172.25.2.6 # master03
+  timeoutForControlPlane: 4m0s
+apiVersion: kubeadm.k8s.io/v1beta3
+certificatesDir: /etc/kubernetes/pki
+clusterName: kubernetes
+# 控制平面高可用入口，所有的高可用操作，最终都是为了这个位置的ip
+controlPlaneEndpoint: 172.25.2.50:6443
+controllerManager: {}
+dns: {}
+etcd:
+  local:
+    dataDir: /var/lib/etcd
+imageRepository: registry.aliyuncs.com/google_containers
+kind: ClusterConfiguration
+kubernetesVersion: v1.30.2
+networking:
+  dnsDomain: cluster.local
+  podSubnet: 10.244.0.0/16
+  serviceSubnet: 10.96.0.0/12
+scheduler: {}
+---
+# 配置ipvs
+apiVersion: kubeproxy.config.k8s.io/v1alpha1
+kind: KubeProxyConfiguration
+mode: ipvs
+---
+# 指定cgroup为systemd
+apiVersion: kubelet.config.k8s.io/v1beta1
+kind: KubeletConfiguration
+cgroupDriver: systemd
+EOF
+# 查看所需镜像列表
+kubeadm config images list --config kubeadm.yml
+# 预拉取镜像
+kubeadm config images pull --config kubeadm.yml
+# 初始化
+kubeadm init --config=kubeadm.yml --upload-certs
+# 配置 kubectl
+mkdir -p $HOME/.kube
+sudo cp -i /etc/kubernetes/admin.conf $HOME/.kube/config
+sudo chown $(id -u):$(id -g) $HOME/.kube/config
+```
+
+#### **安装命令自动补齐**
+
+```
+yum install bash-completion -y
+source /usr/share/bash-completion/bash_completion
+source <(kubectl completion bash)
+echo "source <(kubectl completion bash)" >> ~/.bashrc
+```
+
+#### **新增工作节点**
+
+```
+# 生成加入节点命令
+kubeadm token create --print-join-command
+```
+
+#### **新增控制节点**
+
+```
+# 生成加入节点命令
+kubeadm token create --print-join-command
+# 生成控制节点certificate-key 
+kubeadm init phase upload-certs --upload-certs
+```
+
+通过`--control-plane --certificate-key`拼接命令
+
+> kubeadm join 10.20.13.100:6443 --token abcdef.0123456789abcdef --discovery-token-ca-cert-hash sha256:xxxxxxxxxxxxxx **--control-plane --certificate-key** xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+
+### **安装CNI网络插件**
+
+Calico：[CNI插件-使用calico支持IPv4/IPv6双协议栈 - (](https://sreok.cn/archives/b72d4657-a17a-4209-a4fd-b631e7d06422)[sreok.cn](http://sreok.cn)[)](https://sreok.cn/archives/b72d4657-a17a-4209-a4fd-b631e7d06422)

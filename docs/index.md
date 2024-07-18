@@ -3,9 +3,9 @@
 layout: home
 
 hero:
-  name: "My Awesome Project"
-  text: "A VitePress Site"
-  tagline: My great project tagline
+  name: "kube-go"
+  text: "Elijah Blog"
+  tagline: 专注于运维领域技术知识共享
   actions:
     - theme: brand
       text: Markdown Examples
@@ -13,6 +13,9 @@ hero:
     - theme: alt
       text: API Examples
       link: /api-examples
+  image:
+      src: /images/head.png
+      alt: VitePress image
 
 features:
   - title: Feature A
