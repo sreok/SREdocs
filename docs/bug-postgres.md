@@ -1,4 +1,4 @@
-# 【故障排查】Postgre启动失败：Bus error (core dumped)
+# Postgre启动失败：Bus error (core dumped)
 
 ### **问题描述**
 

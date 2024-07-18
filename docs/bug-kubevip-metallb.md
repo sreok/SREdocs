@@ -1,4 +1,4 @@
-# 【故障排查】kube-vip 与 MetalLB LoadBalancer Layer2 ARP冲突
+# kube-vip 与 MetalLB LoadBalancer Layer2 ARP冲突
 
 ### 问题描述
 

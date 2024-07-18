@@ -1,4 +1,4 @@
-# 【k8s高可用方案】使用Keepalived + Haproxy作为控制平面负载入口
+# 使用Keepalived + Haproxy作为控制平面负载入口
 
 ### 安装keepalived
 

@@ -1,4 +1,4 @@
-# 【高可用负载方案】使用kube-vip作为控制平面负载入口
+# 使用kube-vip作为控制平面负载入口
 
 官方文档地址：[Static Pods | kube-vip](https://kube-vip.io/docs/installation/static/)
 

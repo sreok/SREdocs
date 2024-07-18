@@ -1,4 +1,4 @@
-# 【生产实践】Rocky Linux 9.4 部署高可用Kubernetes v1.30.2
+# Rocky Linux 9.4 部署高可用Kubernetes v1.30.2
 
 ### **配置网络**
 
@@ -27,8 +27,6 @@ method=auto
 
 [proxy]
 ```
-
-
 
 ```
 # 设置时区（所有节点）
@@ -82,8 +80,6 @@ systemctl restart chronyd ; systemctl enable chronyd
 #使用客户端进行验证
 chronyc sources -v
 ```
-
-
 
 #### **关闭防火墙**
 
