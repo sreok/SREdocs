@@ -52,6 +52,7 @@ export default defineConfig({
             ],
           },
         ],
+        link: "/kubernetes",
       },
       {
         text: "云计算",

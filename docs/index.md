@@ -8,13 +8,13 @@ hero:
   tagline: 专注于运维领域技术知识共享
   actions:
     - theme: brand
-      text: Markdown Examples
+      text: 云原生
       link: /markdown-examples
     - theme: alt
       text: API Examples
       link: /api-examples
   image:
-      src: /images/head.png
+      src: ./images/head.png
       alt: VitePress image
 
 features:
