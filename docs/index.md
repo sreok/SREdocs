@@ -9,7 +9,7 @@ hero:
   actions:
     - theme: brand
       text: 云原生
-      link: /markdown-examples
+      link: /cloudnative
     - theme: alt
       text: API Examples
       link: /api-examples

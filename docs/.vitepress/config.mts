@@ -17,6 +17,7 @@ export default defineConfig({
         items: [
           {
             text: "Kubernetes",
+            link: "/kubernetes",
             items: [
               {
                 text: "部署",
@@ -52,7 +53,7 @@ export default defineConfig({
             ],
           },
         ],
-        link: "/kubernetes",
+        link: "/cloudnative",
       },
       {
         text: "云计算",
