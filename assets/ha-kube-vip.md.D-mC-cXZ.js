@@ -1,0 +1,102 @@
+import{_ as s,c as n,o as a,a2 as p}from"./chunks/framework.U6HXpukZ.js";const m=JSON.parse('{"title":"【高可用负载方案】使用kube-vip作为控制平面负载入口","description":"","frontmatter":{},"headers":[],"relativePath":"ha-kube-vip.md","filePath":"ha-kube-vip.md"}'),e={name:"ha-kube-vip.md"},l=p(`<h1 id="【高可用负载方案】使用kube-vip作为控制平面负载入口" tabindex="-1">【高可用负载方案】使用kube-vip作为控制平面负载入口 <a class="header-anchor" href="#【高可用负载方案】使用kube-vip作为控制平面负载入口" aria-label="Permalink to &quot;【高可用负载方案】使用kube-vip作为控制平面负载入口&quot;">​</a></h1><p>官方文档地址：<a href="https://kube-vip.io/docs/installation/static/" target="_blank" rel="noreferrer">Static Pods | kube-vip</a></p><h3 id="生成静态pod清单" tabindex="-1">生成静态pod清单 <a class="header-anchor" href="#生成静态pod清单" aria-label="Permalink to &quot;生成静态pod清单&quot;">​</a></h3><p>在使用kubeadm部署集群前，在每个master节点生成静态pod清单</p><div class="language- vp-adaptive-theme"><button title="Copy Code" class="copy"></button><span class="lang"></span><pre class="shiki shiki-themes github-light github-dark vp-code" tabindex="0"><code><span class="line"><span># 设置vip，前提先ping一下，确保IP没有被占用</span></span>
+<span class="line"><span>export VIP=10.20.13.100</span></span>
+<span class="line"><span># 指定网卡</span></span>
+<span class="line"><span>export INTERFACE=ens192</span></span>
+<span class="line"><span># 获取最新版本</span></span>
+<span class="line"><span># KVVERSION=$(curl -sL https://api.github.com/repos/kube-vip/kube-vip/releases | jq -r &quot;.[0].name&quot;)</span></span>
+<span class="line"><span># 或者指定版本（这个版本目前比较稳定，不会出现报错）</span></span>
+<span class="line"><span>export KVVERSION=v0.6.4</span></span>
+<span class="line"><span># </span></span>
+<span class="line"><span>alias kube-vip=&quot;ctr image pull ghcr.io/kube-vip/kube-vip:$KVVERSION; ctr run --rm --net-host ghcr.io/kube-vip/kube-vip:$KVVERSION vip /kube-vip&quot;</span></span>
+<span class="line"><span># 生成清单文件</span></span>
+<span class="line"><span>mkdir -p /etc/kubernetes/manifests</span></span>
+<span class="line"><span></span></span>
+<span class="line"><span>kube-vip manifest pod \\</span></span>
+<span class="line"><span>    --interface $INTERFACE \\</span></span>
+<span class="line"><span>    --address $VIP \\</span></span>
+<span class="line"><span>    --controlplane \\</span></span>
+<span class="line"><span>    --services \\</span></span>
+<span class="line"><span>    --arp \\</span></span>
+<span class="line"><span>    --leaderElection | tee /etc/kubernetes/manifests/kube-vip.yaml</span></span></code></pre></div><p>或者直接创建清单文件</p><div class="language- vp-adaptive-theme"><button title="Copy Code" class="copy"></button><span class="lang"></span><pre class="shiki shiki-themes github-light github-dark vp-code" tabindex="0"><code><span class="line"><span>mkdir -p /etc/kubernetes/manifests</span></span>
+<span class="line"><span></span></span>
+<span class="line"><span>cat &gt; /etc/kubernetes/manifests/kube-vip.yaml &lt;&lt; EOF</span></span>
+<span class="line"><span>apiVersion: v1</span></span>
+<span class="line"><span>kind: Pod</span></span>
+<span class="line"><span>metadata:</span></span>
+<span class="line"><span>  creationTimestamp: null</span></span>
+<span class="line"><span>  name: kube-vip</span></span>
+<span class="line"><span>  namespace: kube-system</span></span>
+<span class="line"><span>spec:</span></span>
+<span class="line"><span>  containers:</span></span>
+<span class="line"><span>  - args:</span></span>
+<span class="line"><span>    - manager</span></span>
+<span class="line"><span>    env:</span></span>
+<span class="line"><span>      # 使用ARP协议</span></span>
+<span class="line"><span>    - name: vip_arp</span></span>
+<span class="line"><span>      value: &quot;true&quot;</span></span>
+<span class="line"><span>    - name: port</span></span>
+<span class="line"><span>      value: &quot;6443&quot;</span></span>
+<span class="line"><span>    - name: vip_nodename</span></span>
+<span class="line"><span>      valueFrom:</span></span>
+<span class="line"><span>        fieldRef:</span></span>
+<span class="line"><span>          fieldPath: spec.nodeName</span></span>
+<span class="line"><span>    - name: vip_interface</span></span>
+<span class="line"><span>      # 网卡名称</span></span>
+<span class="line"><span>      value: ens192</span></span>
+<span class="line"><span>    - name: vip_cidr</span></span>
+<span class="line"><span>      value: &quot;32&quot;</span></span>
+<span class="line"><span>    - name: dns_mode</span></span>
+<span class="line"><span>      value: first</span></span>
+<span class="line"><span>    - name: cp_enable</span></span>
+<span class="line"><span>      value: &quot;true&quot;</span></span>
+<span class="line"><span>    - name: cp_namespace</span></span>
+<span class="line"><span>      value: kube-system</span></span>
+<span class="line"><span>    - name: svc_enable</span></span>
+<span class="line"><span>      value: &quot;true&quot;</span></span>
+<span class="line"><span>    - name: svc_leasename</span></span>
+<span class="line"><span>      value: plndr-svcs-lock</span></span>
+<span class="line"><span>    - name: vip_leaderelection</span></span>
+<span class="line"><span>      value: &quot;true&quot;</span></span>
+<span class="line"><span>    - name: vip_leasename</span></span>
+<span class="line"><span>      value: plndr-cp-lock</span></span>
+<span class="line"><span>    - name: vip_leaseduration</span></span>
+<span class="line"><span>      value: &quot;5&quot;</span></span>
+<span class="line"><span>    - name: vip_renewdeadline</span></span>
+<span class="line"><span>      value: &quot;3&quot;</span></span>
+<span class="line"><span>    - name: vip_retryperiod</span></span>
+<span class="line"><span>      value: &quot;1&quot;</span></span>
+<span class="line"><span>    - name: address</span></span>
+<span class="line"><span>      # vip地址</span></span>
+<span class="line"><span>      value: 10.20.13.100</span></span>
+<span class="line"><span>    - name: prometheus_server</span></span>
+<span class="line"><span>      value: :2112</span></span>
+<span class="line"><span>    image: ghcr.io/kube-vip/kube-vip:v0.6.4</span></span>
+<span class="line"><span>    imagePullPolicy: IfNotPresent</span></span>
+<span class="line"><span>    name: kube-vip</span></span>
+<span class="line"><span>    resources: {}</span></span>
+<span class="line"><span>    securityContext:</span></span>
+<span class="line"><span>      capabilities:</span></span>
+<span class="line"><span>        add:</span></span>
+<span class="line"><span>        - NET_ADMIN</span></span>
+<span class="line"><span>        - NET_RAW</span></span>
+<span class="line"><span>    volumeMounts:</span></span>
+<span class="line"><span>    - mountPath: /etc/kubernetes/admin.conf</span></span>
+<span class="line"><span>      name: kubeconfig</span></span>
+<span class="line"><span>  hostAliases:</span></span>
+<span class="line"><span>  - hostnames:</span></span>
+<span class="line"><span>    - kubernetes</span></span>
+<span class="line"><span>    ip: 127.0.0.1</span></span>
+<span class="line"><span>  hostNetwork: true</span></span>
+<span class="line"><span>  volumes:</span></span>
+<span class="line"><span>  - hostPath:</span></span>
+<span class="line"><span>      path: /etc/kubernetes/admin.conf</span></span>
+<span class="line"><span>    name: kubeconfig</span></span>
+<span class="line"><span>status: {}</span></span>
+<span class="line"><span>EOF</span></span></code></pre></div><h3 id="故障排查" tabindex="-1">故障排查 <a class="header-anchor" href="#故障排查" aria-label="Permalink to &quot;故障排查&quot;">​</a></h3><p>报错：<code>error retrieving resource lock kube-system/plndr-cp-lock</code></p><blockquote><p>问题地址：</p><p><a href="https://github.com/kube-vip/kube-vip/issues/684" target="_blank" rel="noreferrer">kube-vip 需要 super-admin.conf 和 Kubernetes 1.29 ·问题 #684 ·kube-vip/kube-vip ·GitHub上</a></p><p><a href="https://github.com/aws/eks-anywhere/pull/7368" target="_blank" rel="noreferrer">从 Kubernetes v1.29 开始对 kube-vip 使用超级管理员 Kubeconfig 由 abhay-krishna ·拉取请求 #7368 ·aws/eks-anywhere ·GitHub上</a></p></blockquote><p>解决方法：</p><div class="language- vp-adaptive-theme"><button title="Copy Code" class="copy"></button><span class="lang"></span><pre class="shiki shiki-themes github-light github-dark vp-code" tabindex="0"><code><span class="line"><span># 1.29版本以后需要对kube-vip修改kubernetes客户端路径</span></span>
+<span class="line"><span>sed -i &#39;s#path: /etc/kubernetes/admin.conf#path: /etc/kubernetes/super-admin.conf#&#39; \\</span></span>
+<span class="line"><span>          /etc/kubernetes/manifests/kube-vip.yaml</span></span>
+<span class="line"><span>systemctl restart kubelet</span></span>
+<span class="line"><span># 部署后就可以使用以下命令恢复回来了</span></span>
+<span class="line"><span>sed -i &#39;s#path: /etc/kubernetes/super-admin.conf#path: /etc/kubernetes/admin.conf#&#39; \\</span></span>
+<span class="line"><span>          /etc/kubernetes/manifests/kube-vip.yaml</span></span>
+<span class="line"><span>systemctl restart kubelet</span></span></code></pre></div><h3 id="注意" tabindex="-1"><strong>注意</strong> <a class="header-anchor" href="#注意" aria-label="Permalink to &quot;**注意**&quot;">​</a></h3><p>静态pod部署，主要适用于kubeadm集群，因为kubeadm创建集群的过程中需要使用虚拟ip，kube-vip还有daemonset方式，这里没用过不做讨论，以下是daemonset描述的原文直译：</p><div class="language- vp-adaptive-theme"><button title="Copy Code" class="copy"></button><span class="lang"></span><pre class="shiki shiki-themes github-light github-dark vp-code" tabindex="0"><code><span class="line"><span>一些Kubernetes发行版可以在不依赖预先存在的VIP（虚拟IP）的情况下创建Kubernetes集群（但它们也可以配置为支持VIP）。K3s就是一个典型的例子，它可以配置为启动并签署证书，以允许流量进入虚拟IP。鉴于我们不需要在集群创建之前存在VIP，我们可以启动K3s节点，然后将kube-vip作为所有控制平面节点的DaemonSet添加进去。</span></span></code></pre></div>`,15),i=[l];function t(c,o,u,r,d,b){return a(),n("div",null,i)}const k=s(e,[["render",t]]);export{m as __pageData,k as default};
